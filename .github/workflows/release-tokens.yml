@@ -1,0 +1,32 @@
+name: release-tokens
+
+# The release preflight's checks, run weekly and on demand, so an expired
+# tap or winget token shows up before release day.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.repository == 'conn3xorg/conn3x'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: The tap token can write to the tap and the bucket
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          for repo in homebrew-tap scoop-bucket; do
+            gh api "repos/conn3xorg/$repo/git/blobs" -f content=preflight --silent \
+              || { echo "HOMEBREW_TAP_TOKEN cannot write to conn3xorg/$repo" >&2; exit 1; }
+          done
+      - name: The winget token can write to the fork
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          gh api repos/jamesconwaydev/winget-pkgs/git/blobs -f content=preflight --silent \
+            || { echo "WINGET_TOKEN cannot write to jamesconwaydev/winget-pkgs" >&2; exit 1; }
