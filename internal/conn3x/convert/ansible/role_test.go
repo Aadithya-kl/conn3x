@@ -699,3 +699,67 @@ func TestWhenTextDefault(t *testing.T) {
 		t.Errorf("converted %d, review %+v", res.Converted, res.Review)
 	}
 }
+
+// item from a role's list default is held to what the default itself is:
+// only where Conn3x uses the value exactly as Ansible does, and a package
+// name without a comma.
+func TestListDefaultItemIsHeldLikeADefault(t *testing.T) {
+	dir := writeRole(t, map[string]string{
+		"defaults/main.yml": "dirs: [/srv/a]\npkgs: [git, jq]\n",
+		"tasks/main.yml": `- name: Dirs
+  file: {path: "{{ item }}", state: directory}
+  loop: "{{ dirs }}"
+- name: Packages
+  package: {name: "{{ item }}"}
+  loop: "{{ pkgs }}"
+`,
+	})
+	res, err := ConvertRole(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Converted != 1 || len(res.Review) != 1 || !strings.Contains(res.Review[0].Reason, `path uses item from the role default "dirs"`) {
+		t.Errorf("converted %d, review %+v", res.Converted, res.Review)
+	}
+	if vars := string(res.Files["variables.tf"]); !strings.Contains(vars, `alltrue([for p in var.pkgs : !strcontains(p, ",")])`) {
+		t.Errorf("no comma check on pkgs:\n%s", vars)
+	}
+}
+
+// Each written item of a loop must give the step the loop gives it: a
+// package name Ansible splits at a comma, or a value the module refuses,
+// keeps the task for review.
+func TestLiteralLoopItemsAreChecked(t *testing.T) {
+	res := convertString(t, `- hosts: all
+  tasks:
+    - name: Fine
+      package: {name: "{{ item }}"}
+      loop: [git, jq]
+    - name: Comma
+      package: {name: "{{ item }}"}
+      loop: [git, "a,b"]
+    - name: Bad state
+      service: {name: nginx, state: "{{ item }}"}
+      loop: [started, bogus]
+`)
+	if res.Converted != 1 || len(res.Review) != 2 {
+		t.Fatalf("converted %d, review %+v", res.Converted, res.Review)
+	}
+	if !strings.Contains(res.Review[0].Reason, `loops over "a,b", which Ansible reads differently`) || !strings.Contains(res.Review[1].Reason, `loops over "bogus", and for that item:`) {
+		t.Errorf("review %+v", res.Review)
+	}
+}
+
+// Ansible fills in a package name's variables before it splits the name at
+// commas, so a play var holding two names installs two packages.
+func TestPackageNamesSplitAfterVars(t *testing.T) {
+	res := convertString(t, `- hosts: all
+  vars: {pkgs: "git,jq"}
+  tasks:
+    - package: {name: "{{ pkgs }}"}
+`)
+	hcl := string(res.HCL)
+	if !strings.Contains(hcl, `name = "git"`) || !strings.Contains(hcl, `name = "jq"`) {
+		t.Errorf("converted %d, review %+v\n%s", res.Converted, res.Review, hcl)
+	}
+}
