@@ -964,3 +964,82 @@ func TestRolePackagesWhen(t *testing.T) {
 		t.Errorf("review %+v\n%s", res.Review, hcl)
 	}
 }
+
+// A when on the distribution's name or major version reads conn3x_host,
+// taking the name from a host object's os first, as the family does.
+func TestRoleDistributionWhen(t *testing.T) {
+	res, err := ConvertRole(writeRole(t, map[string]string{
+		"tasks/main.yml": `- name: Ubuntu only
+  copy: {dest: /etc/u, content: x}
+  when: ansible_facts.distribution == 'Ubuntu'
+- name: Not Amazon, 9 or later
+  copy: {dest: /etc/v, content: x}
+  when:
+    - ansible_distribution != "Amazon"
+    - ansible_facts['distribution_major_version'] | int >= 9
+- name: Unknown name
+  copy: {dest: /etc/w, content: x}
+  when: ansible_facts.distribution == 'Gentoo'
+`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Converted != 2 || len(res.Review) != 1 || !strings.Contains(res.Review[0].Reason, "uses when") {
+		t.Fatalf("converted %d, review %+v", res.Converted, res.Review)
+	}
+	hcl := string(res.Files["main.circuit.hcl"])
+	for _, want := range []string{
+		`when = try(var.hosts[each.key].os, data.conn3x_host.facts[each.key].os_id) == "ubuntu"`,
+		`when = try(var.hosts[each.key].os, data.conn3x_host.facts[each.key].os_id) != "amzn" && try(tonumber(split(".", data.conn3x_host.facts[each.key].os_version)[0]), 0) >= 9`,
+		`data "conn3x_host" "facts"`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("missing %s in\n%s", want, hcl)
+		}
+	}
+}
+
+// A when built with and, or, not and parentheses from conditions the
+// converter reads converts too, and so does a list or text default's
+// length. A family test inside one reads local.os_family.
+func TestRoleWhenCombinations(t *testing.T) {
+	res, err := ConvertRole(writeRole(t, map[string]string{
+		"defaults/main.yml": "flag: false\nmode: a\nusers: []\nname_x: ''\n",
+		"tasks/main.yml": `- name: Or
+  copy: {dest: /etc/a, content: x}
+  when: flag or mode == 'b'
+- name: Not and parens
+  copy: {dest: /etc/b, content: x}
+  when: not (flag | bool) and (ansible_facts.os_family == 'Debian' or mode != 'a')
+- name: Length
+  copy: {dest: /etc/c, content: x}
+  when: users | length > 0
+- name: Text length
+  copy: {dest: /etc/d, content: x}
+  when: name_x | length == 0
+- name: Unknown part
+  copy: {dest: /etc/e, content: x}
+  when: flag or nope is defined
+`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Converted != 4 || len(res.Review) != 1 || !strings.Contains(res.Review[0].Task, "Unknown part") {
+		t.Fatalf("converted %d, review %+v", res.Converted, res.Review)
+	}
+	hcl, vars := string(res.Files["main.circuit.hcl"]), string(res.Files["variables.tf"])
+	for _, want := range []string{
+		`when = (var.flag) || (var.mode == "b")`,
+		`when = (!(var.flag)) && ((local.os_family[each.key] == "debian") || (var.mode != "a"))`,
+		`when = length(var.users) > 0`,
+		`when = length(var.name_x) == 0`,
+		`data "conn3x_host" "facts"`,
+		`variable "users"`,
+	} {
+		if !strings.Contains(hcl+vars, want) {
+			t.Errorf("missing %s in\n%s\n%s", want, hcl, vars)
+		}
+	}
+}

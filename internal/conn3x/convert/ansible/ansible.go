@@ -414,7 +414,7 @@ func (c *converter) steps(cb *hclwrite.Body, taskNodes []taskAt, handlerNodes []
 		if c.role != nil {
 			// A role task's when on ansible_facts.packages becomes a step's
 			// when, so it doesn't leave facts unread.
-			later = later || readsFacts(withoutWhen(node)) || whenReadsFacts(mapping(node)["when"])
+			later = later || readsFacts(withoutWhen(node)) || c.role.whenReadsFacts(mapping(node)["when"])
 		} else {
 			later = later || readsFacts(node)
 		}
@@ -815,10 +815,8 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 	if w := t["when"]; w != nil && c.role != nil && w.Kind == yaml.SequenceNode {
 		var rest []*yaml.Node
 		for _, e := range w.Content {
-			if b := c.role.boolWhen(e); b != "" {
+			if b := c.role.whenExpr(e); b != "" {
 				switches = append(switches, b)
-			} else if p := packagesWhen(e); p != "" {
-				switches = append(switches, p)
 			} else {
 				rest = append(rest, e)
 			}
@@ -854,9 +852,7 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 			boolCond = strings.Join(switches, " && ")
 		}
 	} else if w := t["when"]; w != nil && c.role != nil && !familyCond {
-		if boolCond = c.role.boolWhen(w); boolCond == "" {
-			boolCond = packagesWhen(w)
-		}
+		boolCond = c.role.whenExpr(w)
 	}
 	wait := uriRetry(t)
 	module, delegate := "", ""
@@ -1172,6 +1168,14 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 			conds = append(conds, boolCond)
 			if strings.Contains(boolCond, "data.conn3x_packages.") {
 				c.role.packagesUsed = true
+			}
+			if strings.Contains(boolCond, "data.conn3x_host.") || strings.Contains(boolCond, "local.os_family[") {
+				c.role.familyUsed = true
+			}
+			for _, m := range whenListRe.FindAllStringSubmatch(boolCond, -1) {
+				if _, ok := c.role.lists[m[1]]; ok {
+					c.role.listUsed[m[1]] = true
+				}
 			}
 		}
 		if len(conds) > 0 {
