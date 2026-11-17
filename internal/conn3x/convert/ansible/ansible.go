@@ -521,9 +521,6 @@ func neverTagged(n *yaml.Node) bool {
 // finds a handler by its name, so listen changes nothing.
 var handlerKeys = map[string]bool{"name": true, "listen": true, "tags": true, "no_log": true}
 
-// handler converts a handler that restarts or reloads a service into its
-// service block's attributes, returned with its Ansible name, or leaves it
-// for review.
 // gap is a default the step reads that some hosts' vars files don't set,
 // with the axis entries that do.
 type gap struct {
@@ -540,7 +537,7 @@ func (c *converter) gapPreconditions(sb *hclwrite.Body, gaps []gap) {
 	for _, g := range gaps {
 		ids := make([]string, len(g.present))
 		for i, f := range g.present {
-			ids[i] = fmt.Sprintf("%q", f.id())
+			ids[i] = hclString(f.id())
 		}
 		pb := lb.AppendNewBlock("precondition", nil).Body()
 		pb.SetAttributeRaw("condition", rawTokens(fmt.Sprintf("var.%s != null || contains([%s], %s)", g.name, strings.Join(ids, ", "), c.axisExpr())))
@@ -596,6 +593,9 @@ func daemonReloadOnly(h *yaml.Node) (string, bool) {
 	return scalar(t["name"]), ok && v && scalar(t["name"]) != ""
 }
 
+// handler converts a handler that restarts or reloads a service into its
+// service block's attributes, returned with its Ansible name, or leaves it
+// for review.
 func (c *converter) handler(cb *hclwrite.Body, h *yaml.Node, vars map[string]string) ([]attr, string, string) {
 	t := mapping(h)
 	hname := scalar(t["name"])
@@ -1457,7 +1457,7 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 		}
 		var conds []string
 		if familyCond && len(fams) < len(osFamilies) {
-			conds = append(conds, fmt.Sprintf("local.os_family[each.key] == %q", fams[0].conn3x))
+			conds = append(conds, "local.os_family[each.key] == "+hclString(fams[0].conn3x))
 			c.role.familyUsed = true
 		}
 		if boolCond != "" {
