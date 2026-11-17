@@ -524,20 +524,58 @@ var handlerKeys = map[string]bool{"name": true, "listen": true, "tags": true, "n
 // handler converts a handler that restarts or reloads a service into its
 // service block's attributes, returned with its Ansible name, or leaves it
 // for review.
+// gap is a default the step reads that some hosts' vars files don't set,
+// with the axis entries that do.
+type gap struct {
+	name    string
+	present []osFamily
+}
+
 // gapPreconditions stops the plan for a host whose vars file doesn't set a
 // default the step reads, unless the caller sets it, as Ansible stops on
 // the undefined value. Without it HCL would say only that the key doesn't
 // identify an element.
-func (c *converter) gapPreconditions(sb *hclwrite.Body, names []string, present []osFamily) {
-	ids := make([]string, len(present))
-	for i, f := range present {
-		ids[i] = fmt.Sprintf("%q", f.id())
-	}
+func (c *converter) gapPreconditions(sb *hclwrite.Body, gaps []gap) {
 	lb := sb.AppendNewBlock("lifecycle", nil).Body()
-	for _, n := range names {
+	for _, g := range gaps {
+		ids := make([]string, len(g.present))
+		for i, f := range g.present {
+			ids[i] = fmt.Sprintf("%q", f.id())
+		}
 		pb := lb.AppendNewBlock("precondition", nil).Body()
-		pb.SetAttributeRaw("condition", rawTokens(fmt.Sprintf("var.%s != null || contains([%s], %s)", n, strings.Join(ids, ", "), c.axisExpr())))
-		pb.SetAttributeRaw("error_message", rawTokens(fmt.Sprintf(`"${each.key} loads none of the role's vars files that set %s, so Ansible would stop here too. Set var.%s for it."`, n, n)))
+		pb.SetAttributeRaw("condition", rawTokens(fmt.Sprintf("var.%s != null || contains([%s], %s)", g.name, strings.Join(ids, ", "), c.axisExpr())))
+		pb.SetAttributeRaw("error_message", rawTokens(fmt.Sprintf(`"${each.key} loads none of the role's vars files that set %s, so Ansible would stop here too. Set var.%s for it."`, g.name, g.name)))
+	}
+}
+
+// packageListAsLoop reads a package task whose name is a role default
+// that's a list, name: "{{ php_packages }}", as the same task looping over
+// it with name: "{{ item }}". Ansible installs the list in one go and a step
+// per item in turn, which leaves the host the same. t is changed in place;
+// the task's own node, which a TODO quotes, isn't.
+func (c *converter) packageListAsLoop(t map[string]*yaml.Node) {
+	if c.role == nil || t["loop"] != nil || t["with_items"] != nil {
+		return
+	}
+	for k, v := range t {
+		if keywords[k] || !packageModules[k[strings.LastIndex(k, ".")+1:]] || v.Kind != yaml.MappingNode {
+			continue
+		}
+		args := mapping(v)
+		m := bareRef.FindStringSubmatch(scalar(args["name"]))
+		if m == nil || (c.role.lists[m[1]] == nil && c.role.listDefaults[m[1]].src == "") {
+			return
+		}
+		cp := *v
+		cp.Content = append([]*yaml.Node(nil), v.Content...)
+		for i := 0; i+1 < len(cp.Content); i += 2 {
+			if cp.Content[i].Value == "name" {
+				cp.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: "{{ item }}", Line: v.Line, Column: v.Column}
+			}
+		}
+		t[k] = &cp
+		t["loop"] = &yaml.Node{Kind: yaml.ScalarNode, Value: "{{ " + m[1] + " }}", Line: v.Line, Column: v.Column}
+		return
 	}
 }
 
@@ -944,13 +982,14 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 		c.res.Converted++
 		return
 	}
+	c.packageListAsLoop(t)
 	// A loop over a role default that's a list becomes for_each over its
 	// variable. with_items flattens one level, which a list of plain
 	// values doesn't have.
 	listVar := ""
 	for k := range t {
 		if (k == "loop" || k == "with_items") && c.role != nil {
-			if m := bareRef.FindStringSubmatch(scalar(t[k])); m != nil && (c.role.lists[m[1]] != nil || c.role.maps[m[1]] != nil) {
+			if m := bareRef.FindStringSubmatch(scalar(t[k])); m != nil && (c.role.lists[m[1]] != nil || c.role.maps[m[1]] != nil || c.role.listDefaults[m[1]].src != "") {
 				listVar = m[1]
 				continue
 			}
@@ -967,6 +1006,17 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 	if t["loop"] != nil && t["with_items"] != nil {
 		c.issue(body, name, node, "sets both loop and with_items, which Ansible refuses")
 		return
+	}
+	// A list per OS from vars/: for_each takes the caller's list or the
+	// host's, and hosts whose file sets none meet a precondition.
+	var listExpr string
+	var listPresent []osFamily
+	if listVar != "" && c.role.listDefaults[listVar].src != "" {
+		var why string
+		if listExpr, listPresent, why = c.listForEach(listVar); why != "" {
+			c.issue(body, name, node, why)
+			return
+		}
 	}
 	var items []string
 	var itemMaps []map[string]string
@@ -1381,7 +1431,11 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 		if delegate != "" {
 			sb.SetAttributeValue("on", cty.StringVal(delegate))
 		}
-		if listVar != "" && len(in.itemFields) > 0 {
+		if listExpr != "" {
+			sb.SetAttributeRaw("for_each", rawTokens(listExpr))
+			c.role.listDefaultUsed[listVar] = true
+			c.role.familyUsed = true
+		} else if listVar != "" && len(in.itemFields) > 0 {
 			key := c.role.useMapLoop(listVar, in.itemFields)
 			sb.SetAttributeRaw("for_each", rawTokens(fmt.Sprintf("{ for i in var.%s : i.%s => i }", listVar, key)))
 		} else if listVar != "" {
@@ -1427,8 +1481,15 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 				inner.SetAttributeValue(a.key, a.val)
 			}
 		}
-		if len(gapNames) > 0 {
-			c.gapPreconditions(sb, gapNames, gapPresent)
+		var gaps []gap
+		for _, n := range gapNames {
+			gaps = append(gaps, gap{n, gapPresent})
+		}
+		if listExpr != "" && len(c.role.listDefaults[listVar].gaps) > 0 {
+			gaps = append(gaps, gap{listVar, listPresent})
+		}
+		if len(gaps) > 0 {
+			c.gapPreconditions(sb, gaps)
 		}
 		if len(notify) > 0 && i == len(steps)-1 {
 			sb.SetAttributeRaw("notify", rawTokens("["+strings.Join(notify, ", ")+"]"))
