@@ -114,3 +114,31 @@ func TestValidate(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// A program that hands an args_wo value back, in state or in changes, is
+// refused, so Conn3x never stores it.
+func TestCallRefusesArgsWOInOutput(t *testing.T) {
+	ctx, _ := setup(t)
+	r := moduletest.Local{}
+	for name, out := range map[string]string{
+		"state":   `{"state":{"conf":{"password":"hunter2"}},"changed":true}`,
+		"changes": `{"in_sync":false,"changes":[{"path":"password","after":"hunter2"}]}`,
+		"a line":  `{"state":{"line":"TOKEN=hunter2"}}`,
+		"header":  `{"state":{"header":"Authorization: Bearer hunter2"}}`,
+		"url":     `{"state":{"url":"https://app:hunter2@db.internal/x"}}`,
+	} {
+		s := Script{Program: []byte("cat >/dev/null\necho '" + out + "'\n"), Interpreter: []string{"sh"}, ArgsWO: json.RawMessage(`{"password":"hunter2"}`)}
+		if _, err := s.Call(ctx, r, "apply", nil); err == nil || !strings.Contains(err.Error(), "args_wo value") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	ok := Script{Program: []byte("cat >/dev/null\necho '{\"state\":{\"user\":\"app\"}}'\n"), Interpreter: []string{"sh"}, ArgsWO: json.RawMessage(`{"password":"hunter2"}`)}
+	if _, err := ok.Call(ctx, r, "apply", nil); err != nil {
+		t.Errorf("state without the secret: %v", err)
+	}
+	// A short value is only refused whole, so "on" doesn't refuse "json".
+	short := Script{Program: []byte("cat >/dev/null\necho '{\"state\":{\"format\":\"json\"}}'\n"), Interpreter: []string{"sh"}, ArgsWO: json.RawMessage(`{"tls":"on"}`)}
+	if _, err := short.Call(ctx, r, "apply", nil); err != nil {
+		t.Errorf("a short args_wo inside a longer string: %v", err)
+	}
+}
