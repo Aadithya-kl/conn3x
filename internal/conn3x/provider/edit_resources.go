@@ -269,6 +269,10 @@ func (k editKind) schema() providers.Schema {
 		"mode":      {Type: cty.String, Optional: true, Description: "The file's mode, such as \"0644\", set with the edit. Unset keeps the mode the file has, or 0644 for a file it creates."},
 		"owner":     {Type: cty.String, Optional: true, Description: "The file's owner, set with the edit. Unset keeps the owner the file has."},
 		"group":     {Type: cty.String, Optional: true, Description: "The file's group, set with the edit. Unset keeps the group the file has."},
+		"backup": {
+			Type: cty.Bool, Optional: true,
+			Description: "true copies the file, before an edit changes it, beside itself with .conn3x-, the time in UTC, a number and a ~ after its name, such as job.conn3x-20261118T130501Z.4127~, keeping its mode and owner. The ~ keeps cron.d, logrotate.d and the like from loading the copy. An apply that changes nothing makes no copy. Old copies stay until you remove them.",
+		},
 		"validate": {
 			Type: cty.String, Optional: true, WriteOnly: true,
 			Description: "A command that checks the edited file before it replaces the old one, such as \"sshd -t -f %s\". %s stands for the temporary file. Runs only when the edit changes the file, and is kept out of state.",
@@ -482,7 +486,8 @@ func editFile(ctx context.Context, h *hostConn, path, via string, create bool, w
 // fileAttrs is the mode, owner and group an edit step sets, empty where it
 // leaves the file's own.
 func fileAttrs(v cty.Value) file.Desired {
-	return file.Desired{Mode: stringOr(v.GetAttr("mode"), ""), Owner: stringOr(v.GetAttr("owner"), ""), Group: stringOr(v.GetAttr("group"), "")}
+	b := v.GetAttr("backup")
+	return file.Desired{Mode: stringOr(v.GetAttr("mode"), ""), Owner: stringOr(v.GetAttr("owner"), ""), Group: stringOr(v.GetAttr("group"), ""), Backup: known(b) && b.True()}
 }
 
 // withActual fills what d leaves unset from the file as it is.
