@@ -128,6 +128,11 @@ type Client struct {
 
 	// loginKey is the public key the target accepted for this login.
 	loginKey gossh.PublicKey
+
+	shells shells // long-lived shells for Run; see shell.go
+	// waiting counts sessions waiting for a slot, which a shell that
+	// finishes gives up rather than holding it idle.
+	waiting atomic.Int32
 }
 
 // LoginKey is the public key this connection logged in to the target with,
@@ -171,8 +176,25 @@ func newClient(addr string, conn *gossh.Client, jumps []*gossh.Client) *Client {
 // it stops once the cap is down to one session.
 func (c *Client) session(ctx context.Context) (*gossh.Session, error) {
 	for {
-		if err := c.acquire(ctx); err != nil {
+		// An idle shell is the one holder of a slot that can give it back
+		// on demand; without that, a command with stdin could wait for good
+		// behind shells nobody is using.
+		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		select {
+		case c.slots <- struct{}{}:
+		default:
+			// Counted as waiting first, so a shell that finishes from here
+			// on gives its slot up (see runInShell), then any shell already
+			// idle is closed.
+			c.waiting.Add(1)
+			c.closeIdleShell()
+			err := c.acquire(ctx)
+			c.waiting.Add(-1)
+			if err != nil {
+				return nil, err
+			}
 		}
 		s, err := c.conn.NewSession()
 		if err == nil {
@@ -695,7 +717,18 @@ const Prelude = "export LC_ALL=C; umask 022; "
 // Run executes cmd with /bin/sh in the C locale under umask 022, feeding it
 // stdin. A non-zero exit status is reported in Result, not as an error.
 func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, error) {
+	if stdin == nil && shellsEnabled() {
+		if res, ok, err := c.runInShell(ctx, cmd); ok {
+			return res, err
+		}
+	}
+	c.trimShells()
 	res, err := c.exec(ctx, "LC_ALL=C exec /bin/sh -c "+Quote(Prelude+cmd), stdin)
+	if err == nil {
+		c.shells.mu.Lock()
+		c.shells.ready = true
+		c.shells.mu.Unlock()
+	}
 	if err == nil && res.ExitCode != 0 && windowsShellRefused(res.Stderr) {
 		return res, fmt.Errorf("ssh %s: %w", c.addr, ErrWindowsHost)
 	}
