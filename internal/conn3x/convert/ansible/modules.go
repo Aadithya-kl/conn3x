@@ -2017,6 +2017,9 @@ func containerModule(engine string, keys ...string) func(*input) ([]step, string
 // commandLine is a command or shell task's command as /bin/sh runs it, in
 // its chdir, or why the converter can't read it as one.
 func commandLine(in *input) (string, string) {
+	if in.has("argv") {
+		return commandArgvLine(in)
+	}
 	cmd := in.str("cmd")
 	if n, ok := in.args["_raw"]; ok {
 		for _, f := range strings.Fields(n.Value) {
@@ -2043,6 +2046,56 @@ func commandLine(in *input) (string, string) {
 	}
 	in.ignore("executable")
 	return cmd, ""
+}
+
+// commandArgvLine is a command task's argv as /bin/sh runs it: one argument
+// each, quoted so the shell hands the program the words Ansible did, with no
+// quoting to read.
+func commandArgvLine(in *input) (string, string) {
+	if in.has("cmd") || in.has("_raw") {
+		return "", "sets argv beside cmd, which Ansible refuses; keep one of them"
+	}
+	in.used["argv"] = true
+	n := in.args["argv"]
+	if n.Kind != yaml.SequenceNode {
+		return "", "has an argv that isn't a list of arguments; write one argument on each line"
+	}
+	if len(n.Content) == 0 {
+		return "", "has an empty argv, which runs no program"
+	}
+	// Ansible's command module passes each argument through expanduser and
+	// expandvars before running it, unless expand_argument_vars is false, so a
+	// quoted word here would hand the program the text instead of the value.
+	// The shell module joins a list with shlex.quote and expands nothing.
+	expand := in.mod != "command" || in.bool("expand_argument_vars", true)
+	words := make([]string, 0, len(n.Content))
+	for _, e := range n.Content {
+		if e.Kind != yaml.ScalarNode {
+			return "", "has an argument in argv that isn't a single value"
+		}
+		w := in.render("argv", e.Value)
+		if expand && expandsInArgv(w) {
+			return "", "has " + w + " in argv, which Ansible expands before running and a quoted argument wouldn't; write it in a shell step or set expand_argument_vars: false"
+		}
+		words = append(words, shellQuote(w))
+	}
+	line := strings.Join(words, " ")
+	if in.has("chdir") {
+		line = "cd " + shellQuote(in.str("chdir")) + " && " + line
+	}
+	in.ignore("executable")
+	return line, ""
+}
+
+// argVar matches what os.path.expandvars replaces in Ansible's argv: $NAME
+// and ${NAME}. A $ that starts neither is left as it is, so a quoted argument
+// and Ansible agree on it.
+var argVar = regexp.MustCompile(`\$[A-Za-z_{]`)
+
+// expandsInArgv reports whether Ansible's command module would change an
+// argument before running it.
+func expandsInArgv(s string) bool {
+	return strings.HasPrefix(s, "~") || argVar.MatchString(s)
 }
 
 func commandModule(in *input) ([]step, string) {
