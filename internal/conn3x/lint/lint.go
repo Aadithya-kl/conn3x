@@ -10,6 +10,7 @@
 package lint
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -46,6 +47,7 @@ var (
 	PrivilegedShell  = Rule{"C3X004", "privileged-shell", Error}
 	CommandGuard     = Rule{"C3X101", "command-guard", Warning}
 	ModuleConnection = Rule{"C3X102", "module-connection", Warning}
+	CommandSystemctl = Rule{"C3X103", "command-systemctl", Warning}
 	BadIgnore        = Rule{"C3X900", "ignore", Error}
 )
 
@@ -53,7 +55,7 @@ var (
 var Rules = map[string]Rule{}
 
 func init() {
-	for _, r := range []Rule{DownloadChecksum, ImageDigest, ListenAll, PrivilegedShell, CommandGuard, ModuleConnection, BadIgnore} {
+	for _, r := range []Rule{DownloadChecksum, ImageDigest, ListenAll, PrivilegedShell, CommandGuard, ModuleConnection, CommandSystemctl, BadIgnore} {
 		Rules[r.ID] = r
 	}
 }
@@ -459,6 +461,31 @@ func downloads(path, src string) []Finding {
 	return out
 }
 
+// systemctlVerb is a systemctl call that waits on systemd to change a unit,
+// the kind service and service_action retry when systemd re-executes.
+// Longer verbs come first, so reload-or-try-restart isn't read as reload.
+// shortcut: a flag with a separate value, such as -H host, is read as the
+// verb and missed; upgrade if circuits start passing such flags.
+var (
+	systemctlVerb = regexp.MustCompile(`\bsystemctl\s+(?:--?[\w-]+(?:=\S+)?\s+)*(daemon-reload|try-reload-or-restart|reload-or-try-restart|reload-or-restart|try-restart|restart|reload|start|stop)\b`)
+	// enable, disable and mask change a unit's state only with --now.
+	systemctlNow = regexp.MustCompile(`\bsystemctl\s+((?:--?[\w-]+(?:=\S+)?\s+)*)(enable|disable|mask)\b([^;&|\n]*)`)
+)
+
+// systemctlWaits is the systemctl verb in cmd that waits on systemd, such as
+// "restart" or "enable --now", or "" if it has none.
+func systemctlWaits(cmd []byte) string {
+	if m := systemctlVerb.FindSubmatch(cmd); m != nil {
+		return string(m[1])
+	}
+	for _, m := range systemctlNow.FindAllSubmatch(cmd, -1) {
+		if bytes.Contains(m[1], []byte("--now")) || bytes.Contains(m[3], []byte("--now")) {
+			return string(m[2]) + " --now"
+		}
+	}
+	return ""
+}
+
 // commandGuards finds command steps with nothing for Conn3x to read back:
 // no creates, removes or unless, and no triggers. Such a command runs when
 // the step is created and again only when command changes, so if its work
@@ -483,6 +510,13 @@ func commandGuards(path string, src []byte) []Finding {
 					r := blk.TypeRange
 					out = append(out, Finding{Rule: CommandGuard, File: path, Line: r.Start.Line, Column: r.Start.Column,
 						Message: fmt.Sprintf("command in step %q has no creates, removes, unless or triggers, so it ran once and no plan can tell if its work is undone; add a guard that checks it", inStep)})
+				}
+				if c := a["command"]; c != nil {
+					rg := c.Expr.Range()
+					if verb := systemctlWaits(src[rg.Start.Byte:rg.End.Byte]); verb != "" {
+						out = append(out, Finding{Rule: CommandSystemctl, File: path, Line: rg.Start.Line, Column: rg.Start.Column,
+							Message: fmt.Sprintf("command in step %q runs systemctl %s, which fails if systemd re-executes during the apply, as a libc6 or systemd upgrade makes it do; a service or service_action step tries again, and a command can't", inStep, verb)})
+					}
 				}
 			}
 			walk(blk.Body, step)
