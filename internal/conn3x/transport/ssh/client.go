@@ -723,7 +723,7 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 		}
 	}
 	c.trimShells()
-	res, err := c.exec(ctx, "LC_ALL=C exec /bin/sh -c "+Quote(Prelude+cmd), stdin)
+	res, err := c.exec(ctx, "LC_ALL=C exec /bin/sh -c "+LoginQuote(Prelude+cmd), stdin)
 	if err == nil {
 		c.shells.mu.Lock()
 		c.shells.ready = true
@@ -1019,4 +1019,18 @@ func (c *Client) Close() error {
 // Quote returns s as one POSIX shell word, safe to splice into a command.
 func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// loginQuoter closes the single quotes around each backslash and quote and
+// escapes it there, as \\ and \', so neither is ever inside them.
+var loginQuoter = strings.NewReplacer(`\`, `'\\'`, `'`, `'\''`)
+
+// LoginQuote is Quote for the line sshd hands to the login shell, which may
+// be fish or tcsh rather than a POSIX shell. fish reads \' and \\ as escapes
+// inside single quotes, so a quote Quote escaped, nested in a second layer,
+// arrives mangled; tcsh takes a backslash in double quotes as it is, so
+// double quotes are no way round that. Outside quotes, all three read \\ as
+// \ and \' as ', so they read LoginQuote's word as s.
+func LoginQuote(s string) string {
+	return "'" + loginQuoter.Replace(s) + "'"
 }
