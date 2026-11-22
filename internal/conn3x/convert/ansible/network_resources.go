@@ -225,7 +225,7 @@ func networkInterfaces(platform string) func(*input) ([]step, string) {
 			}
 			if e, ok := itemValue(in, item, "enabled"); ok {
 				attrs = append(attrs, attr{key: "enabled", val: cty.BoolVal(truthy(e))})
-			} else if platform != "eos" {
+			} else if platform != "eos" && platform != "ios" {
 				attrs = append(attrs, attr{key: "enabled", val: cty.True})
 			}
 			if m, ok := itemValue(in, item, "mtu"); ok {
@@ -238,10 +238,89 @@ func networkInterfaces(platform string) func(*input) ([]step, string) {
 			if in.problem != "" {
 				return nil, in.problem
 			}
+			if platform == "ios" && !strings.Contains(name, "${") {
+				// Ansible expands a short name such as Gi1/0/1; the step
+				// takes the name as show running-config prints it.
+				if err := (ios.Interface{Name: name}).Validate(); err != nil {
+					return nil, err.Error()
+				}
+			}
 			steps = append(steps, step{module: platform + "_interface", attrs: attrs, suffix: itemSuffix("", name)})
 		}
 		return steps, ""
 	}
+}
+
+// iosL2Interfaces converts ios_l2_interfaces into ios_interface's switchport
+// settings, a step per interface: mode access or trunk and access.vlan. A
+// trunk's allowed_vlans stays for review, since merged adds to the list and
+// the step owns all of it; so do a native VLAN, an encapsulation, a voice
+// VLAN and the other switchport settings.
+func iosL2Interfaces(in *input) ([]step, string) {
+	if reason := resourceState(in, false); reason != "" {
+		return nil, reason
+	}
+	items, reason := resourceItems(in)
+	if reason != "" {
+		return nil, reason
+	}
+	var steps []step
+	for _, item := range items {
+		if extra := unknownKeys(item, "name", "mode", "access", "trunk"); extra != "" {
+			return nil, "sets " + extra + " on an interface, which an ios_interface step doesn't take"
+		}
+		name, _ := itemValue(in, item, "name")
+		if name == "" {
+			return nil, "has an interface without a name"
+		}
+		want := ios.Interface{Name: name}
+		attrs := []attr{s("name", name)}
+		if m, ok := itemValue(in, item, "mode"); ok {
+			if m != "access" && m != "trunk" {
+				return nil, fmt.Sprintf("sets mode %s on %s; an ios_interface step takes access or trunk", m, name)
+			}
+			want.Mode = m
+			attrs = append(attrs, s("mode", m))
+		}
+		if a := item["access"]; a != nil {
+			access := mapping(a)
+			if extra := unknownKeys(access, "vlan"); extra != "" {
+				return nil, "sets access " + extra + " on " + name + ", which an ios_interface step doesn't take"
+			}
+			v, _ := itemValue(in, access, "vlan")
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, fmt.Sprintf("sets access vlan %q on %s, which isn't a VLAN number", v, name)
+			}
+			want.AccessVLAN = n
+			attrs = append(attrs, attr{key: "access_vlan", val: cty.NumberIntVal(int64(n))})
+		}
+		if t := item["trunk"]; t != nil {
+			trunk := mapping(t)
+			if trunk["allowed_vlans"] != nil {
+				// merged adds these to what the trunk carries, and the step's
+				// allowed_vlans is the whole list: converted, a play that adds
+				// VLANs would remove the rest.
+				return nil, "sets trunk allowed_vlans on " + name + ", which adds them to the trunk's list; an ios_interface step's allowed_vlans is the whole list, so write every VLAN the trunk should carry"
+			}
+			if extra := unknownKeys(trunk); extra != "" {
+				return nil, "sets trunk " + extra + " on " + name + ", which an ios_interface step doesn't take"
+			}
+		}
+		if in.problem != "" {
+			return nil, in.problem
+		}
+		if len(attrs) == 1 {
+			return nil, "sets nothing on " + name + " that an ios_interface step takes"
+		}
+		if !strings.Contains(name, "${") {
+			if err := want.Validate(); err != nil {
+				return nil, err.Error()
+			}
+		}
+		steps = append(steps, step{module: "ios_interface", attrs: attrs, suffix: itemSuffix("", name)})
+	}
+	return steps, ""
 }
 
 // vyosL3Interfaces converts vyos_l3_interfaces into vyos_interface's
