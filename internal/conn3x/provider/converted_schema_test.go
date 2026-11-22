@@ -44,6 +44,20 @@ func TestConvertedStepsFitTheirSchemas(t *testing.T) {
     - arista.eos.eos_config: {parents: ["interface Ethernet1"], lines: ["description uplink"]}
     - junipernetworks.junos.junos_config: {lines: ["set system ntp server 192.0.2.10"]}
     - vyos.vyos.vyos_config: {lines: ["set system ntp server 192.0.2.10"]}
+    - arista.eos.eos_hostname: {config: {hostname: leaf1}}
+    - arista.eos.eos_vlans: {config: [{vlan_id: 10, name: users}]}
+    - junipernetworks.junos.junos_vlans: {config: [{name: users, vlan_id: 10}]}
+    - arista.eos.eos_interfaces: {config: [{name: Ethernet1, description: uplink, mtu: 9000, enabled: true}]}
+    - junipernetworks.junos.junos_interfaces: {config: [{name: ge-0/0/1, description: uplink, mtu: 9000}]}
+    - vyos.vyos.vyos_interfaces: {config: [{name: eth1, description: uplink, mtu: 1500}]}
+    - vyos.vyos.vyos_l3_interfaces: {config: [{name: eth1, ipv4: [{address: 192.0.2.1/24}]}]}
+    - junipernetworks.junos.junos_hostname: {config: {hostname: sw1}}
+    - vyos.vyos.vyos_hostname: {config: {hostname: r1}}
+    - junipernetworks.junos.junos_static_routes: {config: [{address_families: [{afi: ipv4, routes: [{dest: 0.0.0.0/0, next_hop: [{forward_router_address: 192.0.2.254}]}]}]}]}
+    - vyos.vyos.vyos_static_routes: {config: [{address_families: [{afi: ipv4, routes: [{dest: 10.0.0.0/8, next_hops: [{forward_router_address: 192.0.2.1, admin_distance: 10}]}]}]}]}
+    - arista.eos.eos_user: {name: ops, role: network-admin, privilege: 15, sshkey: "ssh-ed25519 AAAA ops", nopassword: false}
+    - junipernetworks.junos.junos_user: {name: alice, role: operator, sshkey: "ssh-ed25519 AAAA alice"}
+    - vyos.vyos.vyos_user: {name: alice, full_name: Alice, public_keys: [{name: alice@laptop, key: AAAA, type: ssh-ed25519}]}
 `
 	path := filepath.Join(t.TempDir(), "play.yml")
 	if err := os.WriteFile(path, []byte(playbook), 0o644); err != nil {
@@ -83,7 +97,7 @@ func TestConvertedStepsFitTheirSchemas(t *testing.T) {
 		}
 	}
 	walk(f.Body.(*hclsyntax.Body))
-	if checked < 18 {
+	if checked < 32 {
 		t.Errorf("checked %d steps, want every task's:\n%s", checked, res.HCL)
 	}
 }
