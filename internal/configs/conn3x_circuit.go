@@ -108,6 +108,7 @@ var circuitModules = map[string]string{
 
 	"eos_config":                   "conn3x_eos_config",
 	"eos_hostname":                 "conn3x_eos_hostname",
+	"eos_static_route":             "conn3x_eos_static_route",
 	"eos_vlan":                     "conn3x_eos_vlan",
 	"eos_interface":                "conn3x_eos_interface",
 	"eos_user":                     "conn3x_eos_user",
@@ -126,6 +127,7 @@ var circuitModules = map[string]string{
 	"ios_hostname":                 "conn3x_ios_hostname",
 	"ios_interface":                "conn3x_ios_interface",
 	"ios_vlan":                     "conn3x_ios_vlan",
+	"ios_static_route":             "conn3x_ios_static_route",
 	"windows_acl":                  "conn3x_windows_acl",
 	"windows_ad_domain":            "conn3x_windows_ad_domain",
 	"windows_ad_domain_controller": "conn3x_windows_ad_domain_controller",
