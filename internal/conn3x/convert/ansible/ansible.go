@@ -93,6 +93,10 @@ type converter struct {
 	// csrs are the play's openssl_csr tasks' arguments, by the path each
 	// writes, for an x509_certificate that names it as its csr_path.
 	csrs map[string]map[string]*yaml.Node
+	// keyFolded holds apt_key and rpm_key tasks that fold into the
+	// repository task after them, by task, with the key they import;
+	// keyFrom that key, by the apt_repository task that takes it.
+	keyFolded, keyFrom map[*yaml.Node]string
 	// capPaths counts the play's capabilities tasks by the path each sets.
 	capPaths map[string]int
 	inv      *Inventory
@@ -451,6 +455,7 @@ func (c *converter) steps(cb *hclwrite.Body, taskNodes []taskAt, handlerNodes []
 	}
 	used := map[string]int{}
 	c.jsonPairs(tasks)
+	c.keyPairs(tasks)
 	c.csrs, c.capPaths = map[string]map[string]*yaml.Node{}, map[string]int{}
 	for _, t := range tasks {
 		mod, args := moduleOf(mapping(t.node))
@@ -463,10 +468,15 @@ func (c *converter) steps(cb *hclwrite.Body, taskNodes []taskAt, handlerNodes []
 	}
 	c.findProbes(tasks, vars)
 	c.findUnreadRegisters(tasks)
+	var key taskAt // a key task waiting on the repository task after it
 	for _, t := range tasks {
 		c.file = t.file
 		if t.reason != "" {
 			c.issue(cb, scalar(mapping(t.node)["name"]), t.node, t.reason)
+			if key.node != nil {
+				c.settleKey(cb, key, false)
+				key = taskAt{}
+			}
 			continue
 		}
 		if src, ok := c.jsonRead[t.node]; ok {
@@ -475,8 +485,17 @@ func (c *converter) steps(cb *hclwrite.Body, taskNodes []taskAt, handlerNodes []
 			c.res.Converted++
 			continue
 		}
+		if _, ok := c.keyFolded[t.node]; ok {
+			key = t // settled by the repository task after it
+			continue
+		}
 		c.block = t
+		before := c.res.Converted
 		c.task(cb, t.node, become, vars, handlers, used)
+		if key.node != nil {
+			c.settleKey(cb, key, c.res.Converted > before)
+			key = taskAt{}
+		}
 	}
 	c.block = taskAt{}
 	for _, hb := range handlerBlocks {
@@ -1192,6 +1211,7 @@ func (c *converter) task(body *hclwrite.Body, node *yaml.Node, playBecome bool, 
 		in.wait = wait
 		in.jsonEdits, in.jsonWhy = c.jsonEdits[node], c.jsonWhy[node]
 		in.csrs = c.csrs
+		in.keyFrom = c.keyFrom[node]
 		in.capTasks = c.capPaths[scalar(args["path"])]
 		in.env = t["environment"]
 		steps, reason := m(in)
