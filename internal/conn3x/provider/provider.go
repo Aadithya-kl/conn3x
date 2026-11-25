@@ -232,9 +232,21 @@ func (p *Provider) GetProviderSchema(context.Context) providers.GetProviderSchem
 			"conn3x_packages": packagesDataSchema(), "conn3x_services": servicesDataSchema(),
 			"conn3x_file": fileDataSchema(), "conn3x_command": commandDataSchema(),
 		},
-		EphemeralResources: map[string]providers.Schema{secretsType: secretsSchema(), tunnelType: tunnelSchema(), hostdataType: hostdataSchema()},
+		EphemeralResources: ephemeralSchemas(),
 		Functions:          functions,
 	}
+}
+
+// ephemeralSchemas returns the ephemeral resource schemas, each block marked
+// ephemeral. OpenTofu marks a value ephemeral only from that flag, and
+// without it a value that reaches an ordinary argument is saved in plan and
+// state. Plugin providers get it from ProtoToEphemeralProviderSchema.
+func ephemeralSchemas() map[string]providers.Schema {
+	s := map[string]providers.Schema{secretsType: secretsSchema(), tunnelType: tunnelSchema(), hostdataType: hostdataSchema()}
+	for _, v := range s {
+		v.Block.Ephemeral = true
+	}
+	return s
 }
 
 func (p *Provider) ValidateProviderConfig(_ context.Context, req providers.ValidateProviderConfigRequest) providers.ValidateProviderConfigResponse {

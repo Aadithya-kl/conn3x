@@ -1,0 +1,11 @@
+terraform {
+  required_providers {
+    conn3x = { source = "terraform.io/builtin/conn3x" }
+  }
+}
+
+ephemeral "conn3x_secrets" "app" {
+  file = "${path.module}/secrets.sops.yaml"
+}
+
+{{.}}

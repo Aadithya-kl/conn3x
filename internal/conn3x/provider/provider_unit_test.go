@@ -100,6 +100,21 @@ func TestValidateIOSSSH(t *testing.T) {
 	}
 }
 
+// OpenTofu marks a value ephemeral only when its block says so. Without the
+// flag a secret passed to an ordinary argument is saved in plan and state.
+func TestEphemeralSchemasAreEphemeral(t *testing.T) {
+	p, _ := New()
+	schemas := p.GetProviderSchema(ctx).EphemeralResources
+	if len(schemas) != 3 {
+		t.Errorf("%d ephemeral resources; check each is in ephemeralSchemas", len(schemas))
+	}
+	for name, s := range schemas {
+		if !s.Block.Ephemeral {
+			t.Errorf("%s: Block.Ephemeral is false", name)
+		}
+	}
+}
+
 func TestValidateEphemeralConfig(t *testing.T) {
 	p, _ := New()
 	schemas := p.GetProviderSchema(ctx).EphemeralResources
