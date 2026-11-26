@@ -17,6 +17,7 @@ func TestPathUnderHomeStaysForReview(t *testing.T) {
 		"file: {path: ~/.kube, state: directory}",
 		"file: {name: ~/.kube, state: directory}",
 		"file: {src: ~/app, dest: /usr/local/app, state: link}",
+		"copy: {src: ~/x, dest: /x, remote_src: true}",
 		"copy: {dest: ~/x, content: x}",
 		"template: {src: a.j2, dest: ~/x}",
 		"lineinfile: {path: ~/.bashrc, line: x}",
@@ -42,6 +43,28 @@ func TestPathUnderHomeStaysForReview(t *testing.T) {
 		todo := `TODO(convert): Task "Ensure .kube directory exists." (tasks/main.yml line 4) ` + why + "."
 		if hcl := string(res.Files["main.circuit.hcl"]); !strings.Contains(hcl, todo) {
 			t.Errorf("%q: output lacks %q:\n%s", task, todo, hcl)
+		}
+	}
+}
+
+// Without remote_src, a copy or template src is a file on the controller,
+// which the converter looks for beside the playbook or in the role, so it
+// keeps that reason.
+func TestControllerSrcUnderHomeKeepsItsReason(t *testing.T) {
+	res := convertString(t, "- hosts: all\n  tasks:\n    - copy: {src: ~/files/a, dest: /etc/a}\n")
+	if why := "~/files/a was not found beside the playbook or in files/"; len(res.Review) != 1 || res.Review[0].Reason != why {
+		t.Errorf("playbook copy: review %+v", res.Review)
+	}
+	for task, why := range map[string]string{
+		"copy: {src: ~/files/a, dest: /etc/a}":  "~/files/a was not found in the role's files/",
+		"template: {src: ~/a.j2, dest: /etc/a}": "~/a.j2 was not found in the role's templates/",
+	} {
+		res, err := ConvertRole(writeRole(t, map[string]string{"tasks/main.yml": "- " + task + "\n"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Review) != 1 || res.Review[0].Reason != why {
+			t.Errorf("%q: review %+v", task, res.Review)
 		}
 	}
 }
