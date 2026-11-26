@@ -166,6 +166,20 @@ var pathArgs = map[string][]string{
 	"blockinfile": {"path", "dest", "name"},
 }
 
+// homePathArgs lists the arguments that, in any module, are a path Ansible
+// runs through expanduser on the host, so ~ is the home of whoever the task
+// runs as. Conn3x paths are absolute, and the converter can't tell whose
+// home that is. known_hosts reads its own ~/.ssh/known_hosts.
+var homePathArgs = []string{"path", "dest", "src", "creates", "removes", "chdir"}
+
+// underHome reports whether key's value v is a path under ~ on the host.
+func (in *input) underHome(key, v string) bool {
+	if !strings.HasPrefix(v, "~") || in.mod == "known_hosts" {
+		return false
+	}
+	return slices.Contains(homePathArgs, key) || slices.Contains(pathArgs[in.mod], key)
+}
+
 // pathRef checks a role default name at match i of refs in a path argument
 // s, and records what the variable must hold to. "" when it can go there,
 // or why not.
@@ -258,7 +272,12 @@ func (in *input) str(keys ...string) string {
 			in.fail(k + " is not a single value")
 			return ""
 		}
-		return in.render(k, n.Value)
+		v := in.render(k, n.Value)
+		// A bare ~ is YAML's null, not a path.
+		if n.Tag != "!!null" && in.underHome(k, v) {
+			in.fail("uses a path under ~, which depends on the user the task runs as; write the absolute path")
+		}
+		return v
 	}
 	return ""
 }
