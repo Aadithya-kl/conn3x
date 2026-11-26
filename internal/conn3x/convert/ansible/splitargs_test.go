@@ -79,10 +79,6 @@ func TestModuleOfFreeForm(t *testing.T) {
 	}
 }
 
-func yamlQuote(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
-}
-
 // A free-form line with spaces inside {{ }} converts as the same line
 // without them does; one left open stays for review.
 func TestFreeFormJinjaWithSpaces(t *testing.T) {
