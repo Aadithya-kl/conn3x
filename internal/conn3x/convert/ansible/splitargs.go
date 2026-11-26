@@ -42,9 +42,10 @@ func splitArgs(s string) ([]string, bool) {
 		// As in Ansible, quotes count inside a block and blocks inside quotes.
 		switch c := s[i]; {
 		case c == '"' || c == '\'':
-			if quote == 0 {
+			switch quote {
+			case 0:
 				quote = c
-			} else if quote == c {
+			case c:
 				quote = 0
 			}
 		case i+1 < len(s) && c == '{' && (s[i+1] == '{' || s[i+1] == '%' || s[i+1] == '#'):
