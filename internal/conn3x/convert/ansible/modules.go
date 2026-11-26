@@ -167,6 +167,39 @@ var pathArgs = map[string][]string{
 	"blockinfile": {"path", "dest", "name"},
 }
 
+// homePathArgs lists the arguments that, in any module, are a path Ansible
+// runs through expanduser on the host, so ~ is the home of whoever the task
+// runs as. Conn3x paths are absolute, and the converter can't tell whose
+// home that is. known_hosts reads its own ~/.ssh/known_hosts. src is one
+// only where srcOnHost says so.
+var homePathArgs = []string{"path", "dest", "creates", "removes", "chdir"}
+
+// underHome reports whether key's value v is a path under ~ on the host.
+func (in *input) underHome(key, v string) bool {
+	if !strings.HasPrefix(v, "~") || in.mod == "known_hosts" {
+		return false
+	}
+	if key == "src" {
+		return in.srcOnHost()
+	}
+	return slices.Contains(homePathArgs, key) || slices.Contains(pathArgs[in.mod], key)
+}
+
+// srcOnHost reports whether src is a path on the host: a link's target, or
+// a file copied or unpacked with remote_src. Elsewhere src is on the
+// controller, where ~ is the home of whoever runs the converter, and the
+// converter looks for it beside the playbook or in files/.
+func (in *input) srcOnHost() bool {
+	switch in.mod {
+	case "file":
+		state := scalar(in.args["state"])
+		return state == "link" || state == "hard"
+	case "copy", "unarchive", "win_copy":
+		return truthy(scalar(in.args["remote_src"]))
+	}
+	return false
+}
+
 // pathRef checks a role default name at match i of refs in a path argument
 // s, and records what the variable must hold to. "" when it can go there,
 // or why not.
@@ -259,7 +292,12 @@ func (in *input) str(keys ...string) string {
 			in.fail(k + " is not a single value")
 			return ""
 		}
-		return in.render(k, n.Value)
+		v := in.render(k, n.Value)
+		// A bare ~ is YAML's null, not a path.
+		if n.Tag != "!!null" && in.underHome(k, v) {
+			in.fail("uses a path under ~, which depends on the user the task runs as; write the absolute path")
+		}
+		return v
 	}
 	return ""
 }
@@ -897,6 +935,9 @@ func copyModule(in *input) ([]step, string) {
 			return nil, "sets mode: preserve, which keeps the source file's mode; a file step sets one mode, so write it out in octal"
 		case strings.Contains(src, "\x00"):
 			return nil, "builds src from a loop variable; write the path out in a file step's source_path"
+		case in.problem != "":
+			// Such as a src under ~.
+			return nil, in.problem
 		case !strings.HasPrefix(src, "/"):
 			return nil, "has a relative src with remote_src, so where it reads from depends on the remote user's home"
 		}
